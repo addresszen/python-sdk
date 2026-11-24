@@ -1,0 +1,59 @@
+name: Publish
+
+# Each vX.Y.Z tag on this repository is a release. This workflow builds the tag
+# and uploads it to PyPI via trusted publishing (no token): the `addresszen`
+# project trusts this file and the `pypi` environment, so the file keeps its name.
+# A failed upload is retried by running this workflow with the tag as input;
+# already-uploaded files are skipped.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.2.1)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - id: release
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::Not a release tag: $TAG"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+      # The uv version is required-version in pyproject.toml at this tag.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version-file: pyproject.toml
+          python-version: "3.12"
+      # Refuse a tag whose pyproject.toml disagrees, so a retry never uploads the wrong version.
+      - env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          actual=$(uv version --short)
+          if [[ "$actual" != "$VERSION" ]]; then
+            echo "::error::pyproject.toml is $actual at this tag, expected $VERSION"
+            exit 1
+          fi
+          uv build
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          skip-existing: true
